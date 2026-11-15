@@ -85,7 +85,7 @@ def fetch_universal_jobs(
       else country_name
   )
 
-  # 1. LinkedIn Unauthenticated Guest Jobs Endpoint (Works well for India & Global)
+  # 1. LinkedIn Unauthenticated Guest Jobs Endpoint
   for role in roles:
     try:
       f_tpr = (
@@ -131,19 +131,18 @@ def fetch_universal_jobs(
               if i < len(locations)
               else search_loc
           )
+          clean_link = links[i].split("?")
           all_jobs.append({
               "title": t_clean,
               "company": c_clean,
               "location": l_clean,
               "site": "LinkedIn",
-              "hours_ago": (
-                  hours_old if hours_old <= 24 else 48
-              ),  # Guaranteed by LinkedIn filter
+              "hours_ago": hours_old if hours_old <= 24 else 48,
               "posted_label": (
                   f"Within {hours_old}h" if hours_old <= 24 else "Last 7 days"
               ),
               "is_remote": remote_only or ("remote" in l_clean.lower()),
-              "apply_link": links[i].split("?")[0],
+              "apply_link": clean_link,
               "jd": f"{t_clean} at {c_clean} in {l_clean}",
           })
           diagnostics["LinkedIn Public Feed"] += 1
@@ -297,3 +296,4 @@ def fetch_universal_jobs(
               "site": "Arbeitnow",
               "hours_ago": 24,
               "posted_label": "Recent",
+              "is_remote": bool(item.get("remote", False)),
