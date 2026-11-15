@@ -38,10 +38,10 @@ def evaluate_ats(resume_text, jd_text):
     vectors = vectorizer.fit_transform(
         [resume_text.lower(), str(jd_text).lower()]
     )
-    similarity = float(cosine_similarity(vectors[0:1], vectors[1:2]))
+    similarity = float(cosine_similarity(vectors[0:1], vectors[1:2]).item())
 
     feature_names = vectorizer.get_feature_names_out()
-    jd_vector = vectors.toarray()
+    jd_vector = vectors.toarray()[1]
     resume_lower = resume_text.lower()
 
     num_features = len(feature_names)
@@ -60,7 +60,7 @@ def evaluate_ats(resume_text, jd_text):
     kw_ratio = (len(matched) / len(top_jd_keywords)) if top_jd_keywords else 0.0
     final_score = round((kw_ratio * 60.0) + (similarity * 40.0), 1)
     return min(final_score, 100.0), matched[:8], missing[:8]
-  except ValueError:
+  except Exception:
     return 20.0, [], []
 
 
@@ -131,7 +131,7 @@ def fetch_universal_jobs(
               if i < len(locations)
               else search_loc
           )
-          clean_link = links[i].split("?")
+          clean_link = re.sub(r"\?.*$", "", links[i])
           all_jobs.append({
               "title": t_clean,
               "company": c_clean,
