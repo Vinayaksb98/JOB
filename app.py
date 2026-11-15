@@ -18,32 +18,48 @@ def extract_resume_text(uploaded_file):
   return re.sub(r"\s+", " ", text).strip()
 
 
-# --- ATS SCORING ENGINE ---
+# --- ATS SCORING ENGINE (FIXED) ---
 def evaluate_ats(resume_text, jd_text):
-  if not resume_text or not jd_text or str(jd_text) == "nan":
+  if (
+      not resume_text
+      or not jd_text
+      or str(jd_text).strip().lower() in ["nan", "none", ""]
+  ):
     return 0.0, [], []
 
-  vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
-  vectors = vectorizer.fit_transform(
-      [resume_text.lower(), str(jd_text).lower()]
-  )
-  similarity = cosine_similarity(vectors[0:1], vectors[1:2])
+  try:
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    vectors = vectorizer.fit_transform(
+        [resume_text.lower(), str(jd_text).lower()]
+    )
 
-  feature_names = vectorizer.get_feature_names_out()
-  jd_vector = vectors.toarray().flatten()
-  resume_lower = resume_text.lower()
+    # Extract scalar float from cosine_similarity matrix
+    similarity = float(cosine_similarity(vectors[0:1], vectors[1:2])[0][0])
 
-  top_indices = jd_vector.argsort()[-15:][::-1]
-  top_jd_keywords = [
-      feature_names[i] for i in top_indices if len(feature_names[i]) > 2
-  ]
+    feature_names = vectorizer.get_feature_names_out()
+    # Select row index 1 (the Job Description vector) instead of flattening both rows
+    jd_vector = vectors.toarray()[1]
+    resume_lower = resume_text.lower()
 
-  matched = [kw for kw in top_jd_keywords if kw in resume_lower]
-  missing = [kw for kw in top_jd_keywords if kw not in resume_lower]
+    num_features = len(feature_names)
+    top_n = min(15, num_features)
+    top_indices = jd_vector.argsort()[-top_n:][::-1]
 
-  kw_ratio = (len(matched) / len(top_jd_keywords)) if top_jd_keywords else 0
-  final_score = round((kw_ratio * 60) + (similarity * 40), 1)
-  return min(final_score, 100.0), matched[:8], missing[:8]
+    top_jd_keywords = [
+        feature_names[i]
+        for i in top_indices
+        if i < num_features and len(feature_names[i]) > 2
+    ]
+
+    matched = [kw for kw in top_jd_keywords if kw in resume_lower]
+    missing = [kw for kw in top_jd_keywords if kw not in resume_lower]
+
+    kw_ratio = (len(matched) / len(top_jd_keywords)) if top_jd_keywords else 0.0
+    final_score = round((kw_ratio * 60.0) + (similarity * 40.0), 1)
+    return min(final_score, 100.0), matched[:8], missing[:8]
+  except ValueError:
+    # Handles edge cases where JD contains only stop words or empty tokens
+    return 0.0, [], []
 
 
 # --- KEY-FREE MULTI-SOURCE FETCHER ---
@@ -52,7 +68,6 @@ def fetch_all_free_jobs(
 ):
   combined_results = []
 
-  # 1. Fetch from LinkedIn, Indeed, Naukri, Glassdoor via JobSpy (No API key)
   sites = (
       ["linkedin", "indeed", "naukri", "glassdoor"]
       if location_scope == "Within India"
@@ -92,7 +107,7 @@ def fetch_all_free_jobs(
     except Exception as e:
       st.warning(f"Note on {role} search: {e}")
 
-  # 2. Fetch from Arbeitnow Free Keyless API (Global / Remote ATS boards)
+  # Arbeitnow Free Keyless API (Global / Remote ATS boards)
   if location_scope != "Within India" or remote_only:
     try:
       res = requests.get(
@@ -169,14 +184,14 @@ with st.sidebar:
           "More than 24 Hours (Up to 7 days)",
       ],
   )
-  min_ats = st.slider("Minimum ATS Match Score (%)", 0, 100, 45)
+  min_ats = st.slider("Minimum ATS Match Score (%)", 0, 100, 35)
 
   search_btn = st.button(
       "Search Free Job Boards", type="primary", use_container_width=True
   )
 
 # --- MAIN DASHBOARD ---
-st.title("Universal Job Search & ATS Matcher (No API Key Required)")
+st.title("Universal Job Search & ATS Matcher")
 st.caption(
     "Searches LinkedIn, Indeed, Naukri, Glassdoor, and public ATS feeds"
     " directly."
@@ -262,7 +277,7 @@ if search_btn:
       else:
         for job in final_jobs:
           with st.container(border=True):
-            col_info, col_action = st.columns()
+            col_info, col_action = st.columns([4, 1])
             with col_info:
               st.subheader(f"{job['title']} — {job['company']}")
               st.write(
@@ -280,9 +295,12 @@ if search_btn:
               )
             with col_action:
               st.metric("ATS Match", f"{job['ats_score']}%")
-              st.link_button(
-                  "Apply Now", job["apply_link"], use_container_width=True
-              )
+              if job["apply_link"] and str(job["apply_link"]).startswith(
+                  "http"
+              ):
+                st.link_button(
+                    "Apply Now", job["apply_link"], use_container_width=True
+                )
 
             with st.expander("Read Full Job Description"):
               st.write(job["jd"])
