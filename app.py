@@ -1,299 +1,227 @@
 from datetime import datetime, timezone
 import re
-import fitz  # PyMuPDF
+import fitz
 from jobspy import scrape_jobs
 import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import streamlit as st
 
-st.set_page_config(page_title="Universal AI Job & ATS Dashboard", layout="wide")
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        " (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-}
+st.set_page_config(page_title="Universal Job & ATS Matcher", layout="wide")
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
-# --- RESUME PARSER ---
-def extract_resume_text(uploaded_file):
-  doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-  text = " ".join([page.get_text() for page in doc])
-  return re.sub(r"\s+", " ", text).strip()
+def extract_resume(pdf_file):
+  doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+  return re.sub(r"\s+", " ", " ".join(p.get_text() for p in doc)).strip()
 
 
-# --- ATS SCORING ENGINE ---
-def evaluate_ats(resume_text, jd_text):
-  if (
-      not resume_text
-      or not jd_text
-      or str(jd_text).strip().lower() in ["nan", "none", ""]
-  ):
-    return 20.0, [], []
-
+def score_ats(resume_txt, jd_txt):
+  if not resume_txt or not jd_txt or len(str(jd_txt)) < 10:
+    return 25.0, [], []
   try:
-    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
-    vectors = vectorizer.fit_transform(
-        [resume_text.lower(), str(jd_text).lower()]
-    )
-    similarity = float(cosine_similarity(vectors[0:1], vectors[1:2]).item())
-
-    feature_names = vectorizer.get_feature_names_out()
-    jd_vector = vectors.toarray()[1]
-    resume_lower = resume_text.lower()
-
-    num_features = len(feature_names)
-    top_n = min(15, num_features)
-    top_indices = jd_vector.argsort()[-top_n:][::-1]
-
-    top_jd_keywords = [
-        feature_names[i]
-        for i in top_indices
-        if i < num_features and len(feature_names[i]) > 2
-    ]
-
-    matched = [kw for kw in top_jd_keywords if kw in resume_lower]
-    missing = [kw for kw in top_jd_keywords if kw not in resume_lower]
-
-    kw_ratio = (len(matched) / len(top_jd_keywords)) if top_jd_keywords else 0.0
-    final_score = round((kw_ratio * 60.0) + (similarity * 40.0), 1)
-    return min(final_score, 100.0), matched[:8], missing[:8]
+    vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))
+    mat = vec.fit_transform([resume_txt.lower(), str(jd_txt).lower()])
+    sim = float(cosine_similarity(mat[0:1], mat[1:2]).item())
+    names = vec.get_feature_names_out()
+    jd_weights = mat.toarray().tolist()[1]
+    ranked = sorted(zip(jd_weights, names), reverse=True)[:15]
+    top_kws = [w for _, w in ranked if len(w) > 2]
+    res_low = resume_txt.lower()
+    matched = [k for k in top_kws if k in res_low]
+    missing = [k for k in top_kws if k not in res_low]
+    ratio = len(matched) / len(top_kws) if top_kws else 0.0
+    return min(round((ratio * 60.0) + (sim * 40.0), 1), 100.0), matched[:6], missing[:6]
   except Exception:
-    return 20.0, [], []
+    return 25.0, [], []
 
 
-# --- UNIVERSAL KEYLESS JOB FETCHER ---
-def fetch_universal_jobs(
-    roles, location_scope, city, country_name, hours_old, remote_only
-):
-  all_jobs = []
-  diagnostics = {
-      "LinkedIn Public Feed": 0,
-      "JobSpy (Indeed / Naukri)": 0,
-      "Remotive": 0,
-      "Jobicy": 0,
-      "Himalayas": 0,
-      "Arbeitnow": 0,
-      "RemoteOK": 0,
-  }
+def fetch_jobs(roles, loc_scope, city, country, hours_old, remote_only):
+  jobs = []
+  stats = {"JobSpy": 0, "Remotive": 0, "Jobicy": 0, "Himalayas": 0, "Arbeitnow": 0}
+  loc_str = (city if city else "India") if loc_scope == "Within India" else country
 
-  search_loc = (
-      (city if city else "India")
-      if location_scope == "Within India"
-      else country_name
-  )
-
-  # 1. LinkedIn Unauthenticated Guest Jobs Endpoint
-  for role in roles:
-    try:
-      f_tpr = (
-          f"&f_TPR=r{hours_old * 3600}"
-          if hours_old <= 24
-          else "&f_TPR=r604800"
-      )
-      f_wt = "&f_WT=2" if remote_only else ""
-      li_url = (
-          "https://linkedin.com?"
-          f"keywords={requests.utils.quote(role)}&location={requests.utils.quote(search_loc)}{f_tpr}{f_wt}"
-      )
-      res = requests.get(li_url, headers=HEADERS, timeout=10)
-      if res.status_code == 200:
-        titles = re.findall(
-            r'<h3 class="base-search-card__title"[^>]*>(.*?)</h3>',
-            res.text,
-            re.S,
-        )
-        companies = re.findall(
-            r'<h4 class="base-search-card__subtitle"[^>]*>.*?<a[^>]*>(.*?)</a>',
-            res.text,
-            re.S,
-        )
-        locations = re.findall(
-            r'<span class="job-search-card__location"[^>]*>(.*?)</span>',
-            res.text,
-            re.S,
-        )
-        links = re.findall(
-            r'<a class="base-card__full-link[^"]*" href="([^"]+)"', res.text
-        )
-
-        for i in range(min(len(titles), len(links))):
-          t_clean = re.sub(r"\s+", " ", titles[i]).strip()
-          c_clean = (
-              re.sub(r"\s+", " ", companies[i]).strip()
-              if i < len(companies)
-              else "Company"
-          )
-          l_clean = (
-              re.sub(r"\s+", " ", locations[i]).strip()
-              if i < len(locations)
-              else search_loc
-          )
-          clean_link = re.sub(r"\?.*$", "", links[i])
-          all_jobs.append({
-              "title": t_clean,
-              "company": c_clean,
-              "location": l_clean,
-              "site": "LinkedIn",
-              "hours_ago": hours_old if hours_old <= 24 else 48,
-              "posted_label": (
-                  f"Within {hours_old}h" if hours_old <= 24 else "Last 7 days"
-              ),
-              "is_remote": remote_only or ("remote" in l_clean.lower()),
-              "apply_link": clean_link,
-              "jd": f"{t_clean} at {c_clean} in {l_clean}",
-          })
-          diagnostics["LinkedIn Public Feed"] += 1
-    except Exception:
-      pass
-
-  # 2. JobSpy (Indeed & Naukri for India / Global)
-  sites = ["naukri", "indeed"] if location_scope == "Within India" else ["indeed"]
-  for role in roles:
+  # 1. JobSpy (Naukri & Indeed)
+  sites = ["naukri", "indeed"] if loc_scope == "Within India" else ["indeed"]
+  for r in roles:
     try:
       df = scrape_jobs(
           site_name=sites,
-          search_term=role,
-          location=search_loc,
+          search_term=r,
+          location=loc_str,
           results_wanted=15,
           hours_old=hours_old,
-          country_indeed="India"
-          if location_scope == "Within India"
-          else country_name,
+          country_indeed="India" if loc_scope == "Within India" else country,
           is_remote=remote_only,
       )
       if df is not None and not df.empty:
         for _, row in df.iterrows():
-          all_jobs.append({
-              "title": str(row.get("title", "Role")),
-              "company": str(row.get("company", "Company")),
-              "location": str(row.get("location", search_loc)),
-              "site": str(row.get("site", "Portal")).capitalize(),
-              "hours_ago": hours_old if hours_old <= 24 else 48,
-              "posted_label": str(row.get("date_posted", "Recent")),
-              "is_remote": bool(row.get("is_remote", False)),
-              "apply_link": str(row.get("job_url", "#")),
-              "jd": str(row.get("description", row.get("title", ""))),
-          })
-          diagnostics["JobSpy (Indeed / Naukri)"] += 1
+          jobs.append(dict(
+              title=str(row.get("title", "Role")),
+              company=str(row.get("company", "Company")),
+              location=str(row.get("location", loc_str)),
+              site=str(row.get("site", "Portal")).capitalize(),
+              hours=hours_old if hours_old <= 24 else 48,
+              posted=str(row.get("date_posted", "Recent")),
+              remote=bool(row.get("is_remote", False)),
+              url=str(row.get("job_url", "#")),
+              jd=str(row.get("description", row.get("title", ""))),
+          ))
+          stats["JobSpy"] += 1
     except Exception:
       pass
 
-  # 3. Remotive Public API
-  for role in roles:
+  # 2. Remotive API
+  for r in roles:
     try:
       res = requests.get(
-          f"https://remotive.com{requests.utils.quote(role)}&limit=25",
+          f"https://remotive.com{requests.utils.quote(r)}&limit=25",
           headers=HEADERS,
           timeout=10,
       )
       if res.status_code == 200:
         for item in res.json().get("jobs", []):
-          pub_str = item.get("publication_date", "")
-          hrs = 48
-          if pub_str:
-            try:
-              dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
-              hrs = round(
-                  (datetime.now(timezone.utc) - dt).total_seconds() / 3600, 1
-              )
-            except Exception:
-              pass
-          all_jobs.append({
-              "title": item.get("title", ""),
-              "company": item.get("company_name", "Company"),
-              "location": item.get("candidate_required_location", "Worldwide"),
-              "site": "Remotive",
-              "hours_ago": hrs,
-              "posted_label": f"{hrs}h ago" if hrs < 72 else pub_str[:10],
-              "is_remote": True,
-              "apply_link": item.get("url", "#"),
-              "jd": re.sub(r"<[^<]+?>", " ", item.get("description", "")),
-          })
-          diagnostics["Remotive"] += 1
+          jobs.append(dict(
+              title=item.get("title", ""),
+              company=item.get("company_name", "Company"),
+              location=item.get("candidate_required_location", "Worldwide"),
+              site="Remotive",
+              hours=24,
+              posted=item.get("publication_date", "Recent")[:10],
+              remote=True,
+              url=item.get("url", "#"),
+              jd=re.sub(r"<[^<]+?>", " ", item.get("description", "")),
+          ))
+          stats["Remotive"] += 1
     except Exception:
       pass
 
-  # 4. Jobicy Public API
-  for role in roles:
+  # 3. Jobicy API
+  for r in roles:
     try:
       res = requests.get(
-          f"https://jobicy.com{requests.utils.quote(role)}",
+          f"https://jobicy.com{requests.utils.quote(r)}",
           headers=HEADERS,
           timeout=10,
       )
       if res.status_code == 200:
         for item in res.json().get("jobs", []):
-          all_jobs.append({
-              "title": item.get("jobTitle", ""),
-              "company": item.get("companyName", "Company"),
-              "location": item.get("jobGeo", "Remote"),
-              "site": "Jobicy",
-              "hours_ago": 24,
-              "posted_label": item.get("pubDate", "Recent")[:10],
-              "is_remote": True,
-              "apply_link": item.get("url", "#"),
-              "jd": re.sub(r"<[^<]+?>", " ", item.get("jobDescription", "")),
-          })
-          diagnostics["Jobicy"] += 1
+          jobs.append(dict(
+              title=item.get("jobTitle", ""),
+              company=item.get("companyName", "Company"),
+              location=item.get("jobGeo", "Remote"),
+              site="Jobicy",
+              hours=24,
+              posted=item.get("pubDate", "Recent")[:10],
+              remote=True,
+              url=item.get("url", "#"),
+              jd=re.sub(r"<[^<]+?>", " ", item.get("jobDescription", "")),
+          ))
+          stats["Jobicy"] += 1
     except Exception:
       pass
 
-  # 5. Himalayas Public API
-  try:
-    res = requests.get(
-        "https://himalayas.app", headers=HEADERS, timeout=10
-    )
-    if res.status_code == 200:
-      for item in res.json().get("jobs", []):
-        title = item.get("title", "")
-        if any(
-            w.lower() in title.lower()
-            for r in roles
-            for w in r.split()
-            if len(w) > 2
-        ):
-          all_jobs.append({
-              "title": title,
-              "company": item.get("companyName", "Company"),
-              "location": (
-                  ", ".join(item.get("locationRestrictions", []))
-                  or "Global Remote"
-              ),
-              "site": "Himalayas",
-              "hours_ago": 24,
-              "posted_label": "Recent",
-              "is_remote": True,
-              "apply_link": item.get("applicationLink", "#"),
-              "jd": re.sub(r"<[^<]+?>", " ", item.get("description", "")),
-          })
-          diagnostics["Himalayas"] += 1
-  except Exception:
-    pass
+  # 4. Himalayas & Arbeitnow APIs
+  endpoints = [
+      ("https://himalayas.app", "jobs", "title", "companyName", "applicationLink", "Himalayas"),
+      ("https://arbeitnow.com", "data", "title", "company_name", "url", "Arbeitnow"),
+  ]
+  for api_url, root_key, t_key, c_key, u_key, label in endpoints:
+    try:
+      res = requests.get(api_url, headers=HEADERS, timeout=10)
+      if res.status_code == 200:
+        for item in res.json().get(root_key, [])[:50]:
+          title = item.get(t_key", "") if False else item.get(t_key, "")
+          if any(w.lower() in title.lower() for r in roles for w in r.split() if len(w) > 2):
+            jobs.append(dict(
+                title=title,
+                company=item.get(c_key, "Company"),
+                location=str(item.get("location", "Global Remote")),
+                site=label,
+                hours=24,
+                posted="Recent",
+                remote=True,
+                url=item.get(u_key, "#"),
+                jd=re.sub(r"<[^<]+?>", " ", item.get("description", "")),
+            ))
+            stats[label] += 1
+    except Exception:
+      pass
 
-  # 6. Arbeitnow Public API
-  try:
-    res = requests.get(
-        "https://arbeitnow.com",
-        headers=HEADERS,
-        timeout=10,
-    )
-    if res.status_code == 200:
-      for item in res.json().get("data", [])[:50]:
-        title = item.get("title", "")
-        if any(
-            w.lower() in title.lower()
-            for r in roles
-            for w in r.split()
-            if len(w) > 2
-        ):
-          all_jobs.append({
-              "title": title,
-              "company": item.get("company_name", "Company"),
-              "location": item.get("location", "Global"),
-              "site": "Arbeitnow",
-              "hours_ago": 24,
-              "posted_label": "Recent",
-              "is_remote": bool(item.get("remote", False)),
+  return jobs, stats
+
+
+# --- UI SIDEBAR ---
+with st.sidebar:
+  st.header("1. Resume")
+  resume_file = st.file_uploader("Upload PDF Resume", type=["pdf"])
+  st.header("2. Roles")
+  roles_in = st.text_input("Target Roles", value="Software Engineer, Data Analyst, Manager")
+  st.header("3. Location & Culture")
+  loc_scope = st.radio("Location", ["All Locations (Universal)", "Within India", "Outside India"])
+  city_in = st.text_input("City (Optional)") if loc_scope == "Within India" else ""
+  country_in = st.selectbox("Country", ["USA", "UK", "Canada", "Germany", "UAE", "Singapore"]) if loc_scope == "Outside India" else "India"
+  culture = st.multiselect("Work Culture", ["Remote", "Hybrid", "On-site"], default=["Remote", "Hybrid", "On-site"])
+  st.header("4. Freshness & ATS")
+  freshness = st.selectbox("Posted Within", ["All Recent (Up to 7 days)", "Last 1 Hour", "Last 8 Hours", "Last 24 Hours", "More than 24 Hours"])
+  min_ats = st.slider("Min ATS Score (%)", 0, 100, 10)
+  run_btn = st.button("Search Jobs", type="primary", use_container_width=True)
+
+# --- MAIN DASHBOARD ---
+st.title("Universal Job Search & ATS Matcher")
+if run_btn:
+  if not resume_file:
+    st.warning("Upload your PDF resume first.")
+  else:
+    with st.spinner("Searching universal job boards..."):
+      res_text = extract_resume(resume_file)
+      roles_list = [r.strip() for r in roles_in.split(",") if r.strip()]
+      hrs_map = {"Last 1 Hour": 1, "Last 8 Hours": 8, "Last 24 Hours": 24, "More than 24 Hours": 168, "All Recent (Up to 7 days)": 168}
+      raw, stats = fetch_jobs(roles_list, loc_scope, city_in, country_in, hrs_map[freshness], culture == ["Remote"])
+
+      with st.expander(f"Source Diagnostics (Raw Found: {len(raw)})", expanded=True):
+        st.json(stats)
+
+      seen = set()
+      results = []
+      for j in raw:
+        if j["url"] in seen:
+          continue
+        seen.add(j["url"])
+        blob = (j["title"] + " " + j["location"] + " " + j["jd"]).lower()
+        mode = "Remote" if (j["remote"] or "remote" in blob or "worldwide" in blob) else ("Hybrid" if "hybrid" in blob else "On-site")
+        if mode not in culture:
+          continue
+        if freshness == "Last 1 Hour" and j["hours"] > 1:
+          continue
+        if freshness == "Last 8 Hours" and j["hours"] > 8:
+          continue
+        if freshness == "Last 24 Hours" and j["hours"] > 24:
+          continue
+        if freshness == "More than 24 Hours" and j["hours"] <= 24:
+          continue
+        sc, m_kw, miss_kw = score_ats(res_text, j["jd"])
+        if sc < min_ats:
+          continue
+        j.update(mode=mode, score=sc, matched=m_kw, missing=miss_kw)
+        results.append(j)
+
+      results.sort(key=lambda x: x["score"], reverse=True)
+      c1, c2 = st.columns(2)
+      c1.metric("Matching Jobs", len(results))
+      c2.metric("Avg ATS Score", f"{round(sum(x['score'] for x in results)/len(results), 1) if results else 0}%")
+      st.divider()
+
+      for j in results:
+        with st.container(border=True):
+          left, right = st.columns([4, 1])
+          with left:
+            st.subheader(f"{j['title']} — {j['company']}")
+            st.write(f"**Location:** {j['location']} | **Culture:** `{j['mode']}` | **Source:** {j['site']} | **Posted:** {j['posted']}")
+            st.write(f"**Matched:** {', '.join(j['matched']) or 'General'} | **Missing:** {', '.join(j['missing']) or 'None'}")
+          with right:
+            st.metric("ATS", f"{j['score']}%")
+            if str(j["url"]).startswith("http"):
+              st.link_button("Apply Now", j["url"], use_container_width=True)
+          with st.expander("Job Description"):
+            st.write(j["jd"])
