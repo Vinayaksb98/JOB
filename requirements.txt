@@ -1,0 +1,6 @@
+streamlit
+python-jobspy
+requests
+pymupdf
+scikit-learn
+pandas
