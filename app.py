@@ -21,10 +21,15 @@ init_db()
 with st.sidebar:
     st.header("Search filters")
     regions = st.multiselect("Location", ["India", "Outside India"], default=["India", "Outside India"])
-    modes = st.multiselect("Work mode", ["Remote", "Hybrid", "Onsite", "Unspecified"],
-                           default=["Remote", "Hybrid", "Onsite", "Unspecified"])
-    age_filter = st.selectbox("Posting age", ["Any time", "Last 8 hours", "Last 12 hours",
-                                              "Last 24 hours", "Older than 24 hours"])
+    modes = st.multiselect(
+        "Work mode",
+        ["Remote", "Hybrid", "Onsite", "Unspecified"],
+        default=["Remote", "Hybrid", "Onsite", "Unspecified"]
+    )
+    age_filter = st.selectbox(
+        "Posting age",
+        ["Any time", "Last 8 hours", "Last 12 hours", "Last 24 hours", "Older than 24 hours"]
+    )
     min_score = st.slider("Minimum CV match (%)", 0, 100, 30, 5)
     cv = st.file_uploader("Upload CV (PDF / DOCX / TXT)", type=["pdf", "docx", "txt"])
 
@@ -59,9 +64,12 @@ with tab_scanner:
                     job.update(match_job(resume_text, job))
                     save_job(job)
                 SCAN_FILE.parent.mkdir(exist_ok=True)
-                SCAN_FILE.write_text(json.dumps({"scanned_at": datetime.now(timezone.utc).isoformat(),
-                                                  "jobs": found, "errors": errors},
-                                                 ensure_ascii=False, indent=2), encoding="utf-8")
+                payload_out = dict(
+                    scanned_at=datetime.now(timezone.utc).isoformat(),
+                    jobs=found,
+                    errors=errors
+                )
+                SCAN_FILE.write_text(json.dumps(payload_out, ensure_ascii=False, indent=2), encoding="utf-8")
                 st.session_state["jobs"] = found
                 st.session_state["errors"] = errors
                 st.success(f"Scan finished. {len(found)} relevant jobs collected.")
@@ -85,7 +93,6 @@ with tab_scanner:
     if jobs is None:
         jobs = []
 
-    # Recalculate match scores for the CV uploaded in the current session.
     if resume_text:
         jobs = [dict(j, **match_job(resume_text, j)) for j in jobs]
 
@@ -163,12 +170,20 @@ with tab_scanner:
     st.subheader("Application tracker")
     if tracker:
         df = pd.DataFrame(tracker)
-        st.dataframe(df[["title", "company", "location", "match_score", "status", "url"]],
-                     use_container_width=True, hide_index=True)
-        selected = st.selectbox("Choose saved job", tracker,
-                                format_func=lambda x: f"{x['title']} — {x['company']}")
-        status = st.selectbox("Update application status",
-                              ["Saved", "Applied", "Recruiter contacted", "Interview", "Rejected", "Offer"])
+        st.dataframe(
+            df[["title", "company", "location", "match_score", "status", "url"]],
+            use_container_width=True,
+            hide_index=True
+        )
+        selected = st.selectbox(
+            "Choose saved job",
+            tracker,
+            format_func=lambda x: f"{x['title']} — {x['company']}"
+        )
+        status = st.selectbox(
+            "Update application status",
+            ["Saved", "Applied", "Recruiter contacted", "Interview", "Rejected", "Offer"]
+        )
         if st.button("Update status"):
             update_application(selected["id"], status)
             st.success("Status updated. Refresh the page to see the change.")
@@ -187,7 +202,7 @@ with tab_manual:
         if not m_title or not m_desc:
             st.warning("Please enter both a Job Title and the Job Description.")
         else:
-            custom_job = {
-                "id": f"manual:{m_title}:{m_company}",
-                "title": m_title,
-                "company": m_company or "Target Organization",
+            custom_job = dict(
+                id=f"manual:{m_title}:{m_company}",
+                title=m_title,
+                company=m_company or "Target Organization",
