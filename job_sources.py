@@ -3,16 +3,19 @@ import os
 import requests
 import streamlit as st
 
-HEADERS = {"User-Agent": "SupplierQualityJobFinder/2.2"}
+HEADERS = {"User-Agent": "SupplierQualityJobFinder/2.3"}
 
 
 def get_secret(key):
-    if os.getenv(key):
-        return os.getenv(key)
-    try:
-        return st.secrets.get(key)
-    except Exception:
+    val = os.getenv(key)
+    if not val:
+        try:
+            val = st.secrets.get(key)
+        except Exception:
+            val = None
+    if not val or "your_" in str(val).lower() or "paste_" in str(val).lower():
         return None
+    return str(val).strip()
 
 
 def get_json(url, params=None, headers=None):
@@ -26,18 +29,18 @@ def fetch_naukri_linkedin():
     """Fetches direct Naukri & LinkedIn job listings via Google Search API (Serper.dev)."""
     api_key = get_secret("SERPER_API_KEY")
     if not api_key:
-        raise RuntimeError("SERPER_API_KEY not found in Secrets (needed for direct Naukri & LinkedIn scan).")
+        raise RuntimeError("SERPER_API_KEY missing in Secrets.")
 
-    endpoint = "https://serper.dev"
+    endpoint = "https://" + "google.serper.dev" + "/search"
     req_headers = {
         "X-API-KEY": api_key,
         "Content-Type": "application/json"
     }
 
     targeted_queries = [
-        'site:://linkedin.com ("Supplier Quality Manager" OR "Supplier Quality Engineer") "India" ("remote" OR "global" OR "US" OR "Europe")',
-        'site:://naukri.com ("Supplier Quality Manager" OR "Supplier Development Manager") ("remote" OR "export" OR "global" OR "MNC")',
-        'site:://naukri.com ("Supplier Quality" OR "Quality Assurance Manager") ("casting" OR "forging" OR "IATF 16949") "India"',
+        'site:://linkedin.com ("Supplier Quality Manager" OR "Supplier Quality Engineer") "India"',
+        'site:://naukri.com ("Supplier Quality Manager" OR "Supplier Development Manager") "India"',
+        'site:://naukri.com ("Supplier Quality" OR "Quality Assurance Manager") ("casting" OR "forging" OR "IATF 16949")',
         'site:://linkedin.com ("Supplier Development" OR "Lead Auditor") "IATF 16949" "India"'
     ]
 
@@ -55,7 +58,6 @@ def fetch_naukri_linkedin():
                 snippet = item.get("snippet", "")
                 source_name = "Naukri.com" if "naukri.com" in link else ("LinkedIn" if "linkedin.com" in link else "Web")
 
-                # Clean up common Naukri/LinkedIn title suffixes
                 clean_title = raw_title.split(" - ")[0].split(" | ")[0].strip()
                 company = "See posting"
                 if " - " in raw_title:
@@ -63,9 +65,8 @@ def fetch_naukri_linkedin():
                     if len(parts) > 1:
                         company = parts[1].split("|")[0].strip()
 
-                work_mode = "Remote" if "remote" in (raw_title + " " + snippet).lower() else (
-                    "Hybrid" if "hybrid" in (raw_title + " " + snippet).lower() else "Unspecified"
-                )
+                text_lower = (raw_title + " " + snippet).lower()
+                work_mode = "Remote" if "remote" in text_lower else ("Hybrid" if "hybrid" in text_lower else "Unspecified")
 
                 jobs.append({
                     "id": f"serper:{link}",
@@ -92,9 +93,9 @@ def fetch_jsearch():
     """Fetches live LinkedIn/Indeed/Glassdoor jobs via RapidAPI JSearch."""
     api_key = get_secret("RAPIDAPI_KEY")
     if not api_key:
-        raise RuntimeError("RAPIDAPI_KEY not found in Secrets/Environment.")
+        raise RuntimeError("RAPIDAPI_KEY not configured (optional).")
 
-    endpoint = "https://rapidapi.com"
+    endpoint = "https://" + "://rapidapi.com" + "/search"
     req_headers = {
         "X-RapidAPI-Key": api_key,
         "X-RapidAPI-Host": "://rapidapi.com"
@@ -103,31 +104,21 @@ def fetch_jsearch():
     queries = [
         "Supplier Quality Manager remote India",
         "Supplier Quality Engineer remote India",
-        "Supplier Development Manager India manufacturing",
-        "Lead Supplier Auditor India"
+        "Supplier Development Manager India manufacturing"
     ]
 
     jobs = []
     last_err = None
     for q in queries:
         try:
-            payload = get_json(
-                endpoint,
-                params={"query": q, "num_pages": "2", "date_posted": "month"},
-                headers=req_headers
-            )
+            payload = get_json(endpoint, params={"query": q, "num_pages": "2", "date_posted": "month"}, headers=req_headers)
             for item in payload.get("data", []):
                 is_remote = bool(item.get("job_is_remote", False))
                 city = item.get("job_city") or ""
                 country = item.get("job_country") or ""
                 loc_str = f"{city}, {country}".strip(", ") or "India"
                 desc = item.get("job_description") or ""
-
-                work_mode = "Unspecified"
-                if is_remote or "remote" in desc.lower():
-                    work_mode = "Remote"
-                elif "hybrid" in desc.lower():
-                    work_mode = "Hybrid"
+                work_mode = "Remote" if (is_remote or "remote" in desc.lower()) else ("Hybrid" if "hybrid" in desc.lower() else "Unspecified")
 
                 jobs.append({
                     "id": f"jsearch:{item.get('job_id')}",
@@ -151,7 +142,7 @@ def fetch_jsearch():
 
 
 def fetch_arbeitnow():
-    api_url = "https://arbeitnow.com"
+    api_url = "https://" + "://arbeitnow.com" + "/api/job-board-api"
     payload = get_json(api_url)
     jobs = []
     for item in payload.get("data", []):
@@ -172,7 +163,7 @@ def fetch_arbeitnow():
 
 
 def fetch_remotive():
-    api_url = "https://remotive.com"
+    api_url = "https://" + "remotive.com" + "/api/remote-jobs"
     payload = get_json(api_url, {"category": "all"})
     return [{
         "id": f"remotive:{item.get('id')}",
@@ -191,18 +182,15 @@ def fetch_remotive():
 def fetch_adzuna():
     app_id, app_key = get_secret("ADZUNA_APP_ID"), get_secret("ADZUNA_APP_KEY")
     if not app_id or not app_key:
-        raise RuntimeError("ADZUNA_APP_ID / ADZUNA_APP_KEY not found in Secrets/Environment.")
+        raise RuntimeError("Adzuna keys not configured (optional).")
 
     jobs = []
     last_err = None
     for country in ["in", "us", "gb", "de"]:
         try:
             query = "supplier quality remote" if country != "in" else "supplier quality OR supplier development"
-            api_url = f"https://adzuna.com{country}/search/1"
-            payload = get_json(
-                api_url,
-                {"app_id": app_id, "app_key": app_key, "results_per_page": 50, "what": query}
-            )
+            api_url = "https://" + "://adzuna.com" + f"/v1/api/jobs/{country}/search/1"
+            payload = get_json(api_url, {"app_id": app_id, "app_key": app_key, "results_per_page": 50, "what": query})
             for item in payload.get("results", []):
                 location = item.get("location", {}).get("display_name", "")
                 desc = item.get("description", "")
