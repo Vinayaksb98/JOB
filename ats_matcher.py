@@ -7,7 +7,6 @@ SKILLS = list(dict.fromkeys(CORE_SKILLS + [
     "incoming inspection", "final inspection", "gd&t", "cmm", "foundry", "sheet metal"
 ]))
 
-# Expanded exclusion list to block IT, Pharma, Food, and Retail QA
 BAD_TITLES = (
     "software", "frontend", "front end", "backend", "back end", "full stack",
     "mobile", "web", "data", "content", "game", "graphic", "sales", "marketing",
@@ -54,7 +53,6 @@ def assess_role(job):
     if not any(x in title for x in GOOD_TITLES):
         return False, "Title does not match Supplier or Manufacturing Quality leadership."
     
-    # Must show evidence of heavy/mechanical manufacturing OR strong supplier quality duties
     industry_hits = sum(has(x, full_text) for x in HEAVY_INDUSTRY)
     duty_hits = sum(has(x, desc) for x in DUTIES)
     
@@ -80,9 +78,9 @@ def match_job(resume_text, job_or_description):
     # 1. Dynamic Role & India-Bridge Fit (25%)
     role_fit = 60
     if any(k in title for k in ("manager", "lead", "head", "senior", "staff")):
-        role_fit += 20  # Matches 14+ years leadership level
+        role_fit += 20
     if "india" in loc or any(has(sig, jd) for sig in GLOBAL_BRIDGE_SIGNALS):
-        role_fit += 20  # Matches India-based supplier oversight
+        role_fit += 20
     role_fit = min(100, role_fit)
 
     # 2. Technical & Commodity Skill Fit (45%)
