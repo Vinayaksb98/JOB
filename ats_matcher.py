@@ -95,8 +95,10 @@ def match_job(resume_text, job_or_description):
 
     # 4. Experience Fit (10%)
     years_found = re.findall(r"(\d{1,2})\+?\s*years", jd)
-    years = max([int(y) for y in years_found if int(y) <= 25] or)
-    if not years:
+    valid_years = [int(y) for y in years_found if int(y) <= 25]
+    years = max(valid_years) if valid_years else 0
+
+    if years == 0:
         exp_fit = 85
         note = "Experience years not specified."
     elif years <= YEARS_EXPERIENCE:
